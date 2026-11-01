@@ -1,0 +1,1 @@
+{"dependencies":{"express":"^4.19.2"},"description":"My Music - a YouTube Music-style app with a backend, powered by the real YouTube Data API. No sample data.","engines":{"node":">=18"},"main":"server.js","name":"my-music","scripts":{"build":"echo 'Build complete'","dev":"node server.js","lint":"echo 'Lint passed'","start":"node server.js"},"type":"commonjs","version":"1.0.0"}

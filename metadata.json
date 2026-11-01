@@ -1,0 +1,8 @@
+{
+  "name": "My Music",
+  "description": "YouTube Music-style web app powered by the real YouTube Data API with music playback, trending tracks, playlists, and offline file support.",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Admin — My Music</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #030303; color: #fff; font-family: system-ui, -apple-system, sans-serif; }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 24px 16px 80px; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+  .logo { width: 36px; height: 36px; border-radius: 50%; background: #ff0000; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .logo i { width: 0; height: 0; border-top: 6px solid transparent; border-left: 10px solid #fff; border-bottom: 6px solid transparent; margin-left: 2px; }
+  h1 { font-size: 22px; margin: 0; }
+  .sub { color: #a1a1aa; font-size: 13px; margin: 0 0 24px; }
+  .card { background: #212121; border: 1px solid rgba(255,255,255,.1); border-radius: 16px; padding: 20px; margin-bottom: 16px; }
+  .card h2 { font-size: 16px; margin: 0 0 12px; }
+  input, button { font-size: 14px; }
+  input[type="email"], input[type="password"], input[type="text"] { width: 100%; background: rgba(0,0,0,.4); border: 1px solid rgba(255,255,255,.15); border-radius: 10px; padding: 11px 12px; color: #fff; margin-bottom: 10px; }
+  button { cursor: pointer; border: 0; border-radius: 999px; padding: 10px 18px; font-weight: 600; }
+  .btn-white { background: #fff; color: #000; }
+  .btn-ghost { background: transparent; color: #fff; border: 1px solid rgba(255,255,255,.2); }
+  .btn-danger { background: transparent; color: #fca5a5; border: 1px solid rgba(239,68,68,.4); padding: 6px 12px; font-size: 13px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+  .stat { background: rgba(0,0,0,.3); border: 1px solid rgba(255,255,255,.08); border-radius: 12px; padding: 12px; }
+  .stat b { display: block; font-size: 13px; color: #a1a1aa; margin-bottom: 4px; }
+  .ok { color: #4ade80; } .no { color: #f87171; }
+  .msg { font-size: 13px; color: #fca5a5; min-height: 18px; margin-top: 8px; }
+  .msg.good { color: #4ade80; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid rgba(255,255,255,.08); vertical-align: top; }
+  td small { color: #a1a1aa; word-break: break-all; }
+  .thumb { width: 44px; height: 44px; object-fit: cover; border-radius: 8px; }
+  .note { font-size: 13px; color: #a1a1aa; line-height: 1.5; }
+  .hidden { display: none !important; }
+  a { color: #fff; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo"><i></i></div>
+    <div><h1>My Music — Admin</h1></div>
+  </header>
+  <p class="sub">Signed in with the admin email and password set in Vercel. Those values are never shown on this page.</p>
+
+  <div id="login-card" class="card">
+    <h2>Admin sign-in</h2>
+    <form id="login-form">
+      <input id="admin-email" type="email" placeholder="Admin email" autocomplete="username" required />
+      <input id="admin-password" type="password" placeholder="Admin password" autocomplete="current-password" required />
+      <div class="row">
+        <button type="submit" class="btn-white">Sign in</button>
+        <a href="/" style="font-size:13px;">← Back to My Music</a>
+      </div>
+      <div id="login-msg" class="msg"></div>
+    </form>
+    <p class="note">If you see “Admin is not configured”, set ADMIN_EMAIL and ADMIN_PASSWORD in Vercel (Production) and redeploy.</p>
+  </div>
+
+  <div id="dashboard" class="hidden">
+    <div class="card">
+      <div class="row" style="justify-content:space-between;">
+        <h2 style="margin:0;">Welcome, <span id="admin-name">Admin</span></h2>
+        <button id="logout-btn" class="btn-ghost">Sign out</button>
+      </div>
+      <p class="note" id="admin-email-line"></p>
+      <div id="health-grid" class="grid" style="margin-top:14px;"></div>
+    </div>
+
+    <div class="card">
+      <h2>Test YouTube search (India filter)</h2>
+      <p class="note">Runs one real YouTube search through the server, with the same India availability filter as the app. No sample results.</p>
+      <div class="row" style="margin-top:10px;">
+        <input id="yt-q" type="text" placeholder="Search, e.g. pak ost" style="flex:1; min-width:200px; margin:0;" />
+        <button id="yt-btn" class="btn-white">Test</button>
+      </div>
+      <div id="yt-results" style="margin-top:12px;"></div>
+    </div>
+
+    <div class="card">
+      <h2>User registrations — admin approval</h2>
+      <p class="note">A new user's first Google sign-in creates a <b>pending</b> registration and does not sign them in. Approve them here, and their next sign-in will work. Rejecting blocks sign-in. Removing deletes the registration — their next sign-in becomes a fresh pending request, and any existing session is revoked on its next check. If Supabase is not configured, this list cannot work and sign-in is paused (not bypassed).</p>
+      <div class="row" style="margin-top:10px;">
+        <button id="users-refresh-btn" class="btn-ghost">Refresh users</button>
+      </div>
+      <div id="users-list" style="margin-top:12px;"></div>
+    </div>
+
+    <div class="card">
+      <h2>Saved tracks (Supabase, if configured)</h2>
+      <p class="note">Playlists and Library songs saved in a visitor's browser cannot be seen or managed here — they live only in that browser. This table only covers tracks saved to Supabase through the server library API, when Supabase is configured.</p>
+      <div id="saved-tracks" style="margin-top:12px;"></div>
+    </div>
+  </div>
+</div>
+<script>
+  const $ = (id) => document.getElementById(id);
+  function showMsg(el, text, good) {
+    el.textContent = text || "";
+    el.classList.toggle("good", !!good);
+  }
+  async function loadMe() {
+    try {
+      const res = await fetch("/api/admin/me");
+      const data = await res.json();
+      if (data.admin) {
+        $("login-card").classList.add("hidden");
+        $("dashboard").classList.remove("hidden");
+        $("admin-name").textContent = data.admin.name || "Admin";
+        $("admin-email-line").textContent = data.admin.email || "";
+        loadHealth();
+        loadUsers();
+        loadSavedTracks();
+      } else {
+        $("login-card").classList.remove("hidden");
+        $("dashboard").classList.add("hidden");
+      }
+    } catch { /* stay on login */ }
+  }
+  async function loadHealth() {
+    try {
+      const res = await fetch("/api/admin/health");
+      if (!res.ok) { if (res.status === 401) loadMe(); return; }
+      const h = await res.json();
+      const items = [
+        ["YouTube API", h.youtubeConfigured],
+        ["Google sign-in", h.googleConfigured],
+        ["Supabase", h.supabaseConfigured],
+        ["Groq (health flag only)", h.groqConfigured],
+        ["User sign-in enabled", h.authEnabled],
+      ];
+      $("health-grid").innerHTML = items.map(([label, on]) =>
+        `<div class="stat"><b>${label}</b><span class="${on ? "ok" : "no"}">${on ? "Configured" : "Not configured"}</span></div>`).join("");
+    } catch {}
+  }
+  $("login-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    showMsg($("login-msg"), "");
+    const res = await fetch("/api/admin/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: $("admin-email").value.trim(), password: $("admin-password").value }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { showMsg($("login-msg"), data.error || "Sign-in failed"); return; }
+    $("admin-password").value = "";
+    loadMe();
+  });
+  $("logout-btn").addEventListener("click", async () => {
+    await fetch("/api/admin/logout", { method: "POST" });
+    loadMe();
+  });
+  $("yt-btn").addEventListener("click", async () => {
+    const q = $("yt-q").value.trim();
+    if (!q) return;
+    $("yt-results").innerHTML = "<p class='note'>Searching…</p>";
+    const res = await fetch(`/api/admin/youtube-test?q=${encodeURIComponent(q)}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { $("yt-results").innerHTML = `<p class='note'>${data.error || "Search failed"}</p>`; return; }
+    const items = data.items || [];
+    $("yt-results").innerHTML = items.length
+      ? `<p class='note'>${items.length} playable result(s) in India:</p><ul>` + items.map(t =>
+        `<li>${t.title} — ${t.channel} (${t.durationSeconds || "?"}s)</li>`).join("") + "</ul>"
+      : "<p class='note'>No playable results in India for that search.</p>";
+  });
+  async function loadUsers() {
+    const box = $("users-list");
+    box.innerHTML = "<p class='note'>Loading…</p>";
+    const res = await fetch("/api/admin/users");
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { box.innerHTML = `<p class='note'>${data.error || "Users are not available (Supabase may not be configured, or the my_music_users table may not exist yet — run supabase/schema.sql)."}</p>`; return; }
+    const users = data.users || [];
+    if (!users.length) { box.innerHTML = "<p class='note'>No registrations yet. A new Google sign-in will appear here as pending.</p>"; return; }
+    box.innerHTML = `<table><thead><tr><th>User</th><th>Status</th><th>Registered</th><th></th></tr></thead><tbody>` +
+      users.map(u => `<tr>
+        <td>${u.name || ""}<br /><small>${u.user_email || ""}</small></td>
+        <td><b>${u.status || "pending"}</b></td>
+        <td><small>${u.created_at ? new Date(u.created_at).toLocaleString() : ""}</small></td>
+        <td><div class="row">
+          ${u.status !== "approved" ? `<button class="btn-ghost" style="padding:6px 12px;font-size:13px;" onclick="setUserStatus('${encodeURIComponent(u.user_email || "")}', 'approve')">Approve</button>` : ""}
+          ${u.status !== "rejected" ? `<button class="btn-ghost" style="padding:6px 12px;font-size:13px;" onclick="setUserStatus('${encodeURIComponent(u.user_email || "")}', 'reject')">Reject</button>` : ""}
+          <button class="btn-danger" onclick="removeUser('${encodeURIComponent(u.user_email || "")}')">Remove</button>
+        </div></td>
+      </tr>`).join("") + "</tbody></table>";
+  }
+  window.setUserStatus = async (email, action) => {
+    const res = await fetch(`/api/admin/users/${action}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: decodeURIComponent(email) }),
+    });
+    if (res.ok) loadUsers(); else alert("Update failed");
+  };
+  window.removeUser = async (email) => {
+    if (!confirm("Remove this user? Their next sign-in will need approval again.")) return;
+    const res = await fetch(`/api/admin/users?email=${email}`, { method: "DELETE" });
+    if (res.ok) loadUsers(); else alert("Remove failed");
+  };
+  $("users-refresh-btn").addEventListener("click", loadUsers);
+  async function loadSavedTracks() {
+    const box = $("saved-tracks");
+    box.innerHTML = "<p class='note'>Loading…</p>";
+    const res = await fetch("/api/admin/saved-tracks");
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { box.innerHTML = `<p class='note'>${data.error || "Saved tracks are not available (Supabase may not be configured)."}</p>`; return; }
+    const rows = data.tracks || [];
+    if (!rows.length) { box.innerHTML = "<p class='note'>No saved tracks in Supabase yet.</p>"; return; }
+    box.innerHTML = `<table><thead><tr><th></th><th>Title / Channel</th><th>User</th><th></th></tr></thead><tbody>` +
+      rows.map(r => `<tr>
+        <td>${r.thumbnail ? `<img class="thumb" src="${r.thumbnail}" alt="" />` : ""}</td>
+        <td>${r.title || ""}<br /><small>${r.channel || ""}</small></td>
+        <td><small>${r.user_email || ""}</small></td>
+        <td><button class="btn-danger" onclick="deleteSavedTrack(this, '${encodeURIComponent(r.user_email || "")}', '${encodeURIComponent(r.video_id || "")}')">Delete</button></td>
+      </tr>`).join("") + "</tbody></table>";
+  }
+  window.deleteSavedTrack = async (btn, email, videoId) => {
+    if (!confirm("Delete this saved track from Supabase?")) return;
+    const res = await fetch(`/api/admin/saved-tracks?email=${email}&video_id=${videoId}`, { method: "DELETE" });
+    if (res.ok) loadSavedTracks();
+    else alert("Delete failed");
+  };
+  loadMe();
+</script>
+</body>
+</html>

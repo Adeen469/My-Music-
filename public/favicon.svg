@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- My Music logo: red circle, white ring, white play triangle.
+       Vector version of the user's logo, so it stays sharp at tab size
+       and has a transparent background (no white box around it). -->
+  <circle cx="32" cy="32" r="30" fill="#FF0000"/>
+  <circle cx="32" cy="32" r="25" fill="none" stroke="#FFFFFF" stroke-width="2" opacity="0.9"/>
+  <path d="M27 20 L45 32 L27 44 Z" fill="#FFFFFF"/>
+</svg>
