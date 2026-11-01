@@ -52,9 +52,9 @@ const ADMIN_NAME = (process.env.ADMIN_NAME || "").trim();
 // email param); it only identifies the profile shown in the UI.
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
-// Google auth login and admin approval are disabled by default (per user request),
-// while keeping all OAuth and approval code intact if re-enabled via env vars.
-const AUTH_ENABLED = process.env.AUTH_ENABLED === "true";
+// Google sign-in: ENABLED when ID + Secret are present (or AUTH_ENABLED=true).
+// Admin approval is disabled by default per user request, while keeping all code intact.
+const AUTH_ENABLED = process.env.AUTH_ENABLED !== "false" && Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
 const APPROVAL_REQUIRED = process.env.APPROVAL_REQUIRED === "true";
 // Redirect URI: if GOOGLE_REDIRECT_URI is set in Vercel, use it.
 // Otherwise derive it from the incoming request host, so production
@@ -344,34 +344,37 @@ app.get("/auth/google/callback", async (req, res) => {
     const profile = await meRes.json();
     const user = { name: profile.name || "", email: profile.email || "", picture: profile.picture || "" };
     if (!user.email) throw new Error("Google did not return an email address");
-    // ---- Admin approval gate (2026-11-01, user request) ----
-    // First Google sign-in = a registration that needs admin
-    // permission. No one is signed in until an admin approves them
-    // in /admin (with the admin email/password, not Google).
-    // Approval lives in Supabase (my_music_users) because playlists
-    // and Library are browser-local and cannot be approved across
-    // devices from there. If Supabase is not configured, sign-in is
-    // paused with a clear message — it is never bypassed.
-    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-      return res.status(503).send("User registration requires admin approval, but Supabase is not configured yet. Ask the admin to set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Vercel, run supabase/schema.sql (which creates the my_music_users table), and redeploy. Sign-in is paused until then.");
-    }
-    let row;
-    try {
-      row = await getRegisteredUser(user.email);
-    } catch (e) {
-      return res.status(500).send(`User approval check failed: ${e.message}. The admin needs to run supabase/schema.sql (my_music_users table) and redeploy.`);
-    }
-    if (!row) {
-      try {
-        await supabaseFetch("my_music_users", "POST", { user_email: user.email, name: user.name, picture: user.picture, status: "pending" });
-      } catch {
-        // Race (two sign-ins at once): re-read, do not fail the user.
-        try { row = await getRegisteredUser(user.email); } catch {}
+    // Admin approval gate (enabled only when APPROVAL_REQUIRED is true)
+    if (APPROVAL_REQUIRED) {
+      if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+        return res.status(503).send("User registration requires admin approval, but Supabase is not configured yet. Ask the admin to set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Vercel, run supabase/schema.sql (which creates the my_music_users table), and redeploy. Sign-in is paused until then.");
       }
-      if (!row) return res.redirect("/?registration=pending");
-    }
-    if (row && row.status !== "approved") {
-      return res.redirect(`/?registration=${row.status === "rejected" ? "rejected" : "pending"}`);
+      let row;
+      try {
+        row = await getRegisteredUser(user.email);
+      } catch (e) {
+        return res.status(500).send(`User approval check failed: ${e.message}. The admin needs to run supabase/schema.sql (my_music_users table) and redeploy.`);
+      }
+      if (!row) {
+        try {
+          await supabaseFetch("my_music_users", "POST", { user_email: user.email, name: user.name, picture: user.picture, status: "pending" });
+        } catch {
+          // Race (two sign-ins at once): re-read, do not fail the user.
+          try { row = await getRegisteredUser(user.email); } catch {}
+        }
+        if (!row) return res.redirect("/?registration=pending");
+      }
+      if (row && row.status !== "approved") {
+        return res.redirect(`/?registration=${row.status === "rejected" ? "rejected" : "pending"}`);
+      }
+    } else if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
+      // Record user in Supabase without blocking login
+      try {
+        const row = await getRegisteredUser(user.email);
+        if (!row) {
+          await supabaseFetch("my_music_users", "POST", { user_email: user.email, name: user.name, picture: user.picture, status: "approved" });
+        }
+      } catch {}
     }
     const cookie = signUserSession(user);
     const isHttps = (req.get && req.get("x-forwarded-proto") === "https") || req.secure;
@@ -709,8 +712,14 @@ async function resolveYouTubeStream(videoId, preferType = "video") {
       }
     } catch {}
   }
-  const err = new Error(lastReason);
-  err.status = 404;
+  const isBotBlock = /bot/i.test(lastReason) || /sign in/i.test(lastReason);
+  const err = new Error(
+    isBotBlock
+      ? "YouTube bot verification required for cloud stream extraction on this video"
+      : lastReason
+  );
+  err.status = isBotBlock ? 403 : 404;
+  err.botBlocked = isBotBlock;
   throw err;
 }
 
@@ -768,7 +777,12 @@ app.get("/api/youtube/download/:id", async (req, res) => {
     }
   } catch (e) {
     if (!res.headersSent) {
-      res.status(e.status || 500).json({ error: e.message || "Could not download video" });
+      res.status(e.status || 500).json({
+        error: e.message || "Could not download video",
+        botBlocked: Boolean(e.botBlocked),
+        videoId,
+        watchUrl: `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`,
+      });
     }
   }
 });

@@ -353,9 +353,12 @@
       if (videoId && (!track.downloadUrl || !/^https?:\/\//i.test(track.downloadUrl))) {
         const downloadEndpoint = `/api/youtube/download/${encodeURIComponent(videoId)}?type=${encodeURIComponent(preferType)}&title=${encodeURIComponent(track.title || videoId)}`;
         API.notify(`Downloading "${track.title || videoId}" in browser…`);
-        const res = await fetch(downloadEndpoint);
         if (!res.ok) {
           const errData = await res.json().catch(() => ({}));
+          if (errData.botBlocked) {
+            API.notify(`YouTube restricted downloading "${track.title || videoId}" (cloud bot protection). Use "Open on YouTube" to watch or save.`);
+            return;
+          }
           throw new Error(errData.error || `Download failed (${res.status})`);
         }
         const blob = await res.blob();
@@ -968,7 +971,11 @@
       }
       const avatar = document.getElementById("user-avatar");
       if (avatar && data.user) {
-        avatar.textContent = (data.user.name || data.user.email || "?")[0].toUpperCase();
+        if (data.user.picture) {
+          avatar.innerHTML = `<img src="${data.user.picture}" class="w-full h-full rounded-full object-cover" />`;
+        } else {
+          avatar.textContent = (data.user.name || data.user.email || "?")[0].toUpperCase();
+        }
         avatar.title = data.user.email || data.user.name || "Profile";
       }
       if (typeof renderContent === "function") {
@@ -978,10 +985,8 @@
     } catch { return null; }
   }
   API.on("onProfileClick", () => {
-    if (window.__currentUser || !window.__authEnabled) {
-      try { window.showProfile(); } catch {}
-    } else {
-      window.location.href = "/auth/google";
+    try { window.showProfile(); } catch {
+      if (window.__authEnabled && !window.__currentUser) window.location.href = "/auth/google";
     }
   });
   API.on("onArtistSelect", (name) => { try { window.showArtist(name); } catch {} });
