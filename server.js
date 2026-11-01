@@ -52,9 +52,10 @@ const ADMIN_NAME = (process.env.ADMIN_NAME || "").trim();
 // email param); it only identifies the profile shown in the UI.
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
-const AUTH_ENABLED = process.env.AUTH_ENABLED === "false"
-  ? false
-  : (process.env.AUTH_ENABLED === "true" || Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET));
+// Google auth login and admin approval are disabled by default (per user request),
+// while keeping all OAuth and approval code intact if re-enabled via env vars.
+const AUTH_ENABLED = process.env.AUTH_ENABLED === "true";
+const APPROVAL_REQUIRED = process.env.APPROVAL_REQUIRED === "true";
 // Redirect URI: if GOOGLE_REDIRECT_URI is set in Vercel, use it.
 // Otherwise derive it from the incoming request host, so production
 // automatically uses https://<your-domain>/auth/google/callback
@@ -214,16 +215,14 @@ app.get("/api/health", (req, res) => {
 
 app.get("/api/me", async (req, res) => {
   const user = AUTH_ENABLED ? getUser(req) : null;
-  if (!user || !user.email) return res.json({ user: null, authEnabled: AUTH_ENABLED });
-  // Admin approval enforcement (2026-11-01, gated app 2026-11-01):
-  // a signed-in Google user who is not approved in Supabase is signed
-  // out here, so removing a user in /admin revokes them without
-  // waiting for their cookie to expire. If Supabase is not
-  // configured, approval cannot be verified, so NO session counts
-  // as approved — the app shows only the landing page (fail closed).
-  // New Google sign-ins are blocked in the callback too.
+  if (!user || !user.email) {
+    return res.json({ user: null, authEnabled: AUTH_ENABLED, approvalRequired: APPROVAL_REQUIRED });
+  }
+  if (!APPROVAL_REQUIRED) {
+    return res.json({ user, authEnabled: AUTH_ENABLED, approvalRequired: false });
+  }
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-    return res.json({ user: null, authEnabled: AUTH_ENABLED, registrationStatus: "setup" });
+    return res.json({ user: null, authEnabled: AUTH_ENABLED, approvalRequired: true, registrationStatus: "setup" });
   }
   if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
     try {
@@ -231,12 +230,12 @@ app.get("/api/me", async (req, res) => {
       if (!row || row.status !== "approved") {
         const isHttps = (req.get && req.get("x-forwarded-proto") === "https") || req.secure;
         res.setHeader("Set-Cookie", `my_music_user=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax${isHttps ? "; Secure" : ""}`);
-        return res.json({ user: null, authEnabled: AUTH_ENABLED, registrationStatus: row ? row.status : "removed" });
+        return res.json({ user: null, authEnabled: AUTH_ENABLED, approvalRequired: true, registrationStatus: row ? row.status : "removed" });
       }
     } catch { /* transient DB error: do not revoke on a blip; the
                  callback check is strict on the next sign-in */ }
   }
-  return res.json({ user, authEnabled: AUTH_ENABLED });
+  return res.json({ user, authEnabled: AUTH_ENABLED, approvalRequired: true });
 });
 
 // ---- YouTube Data API (proxied so the API key never reaches the browser) ----
@@ -573,14 +572,12 @@ app.delete("/api/library", requireApprovedUser, async (req, res) => {
   }
 });
 
-// ---- Gated app (2026-11-01, user request) ----
-// Without admin approval, a visitor sees ONLY the landing page.
-// The frontend enforces that, but the content APIs enforce it too,
-// so a direct /api/trending or /api/search call without an approved
-// signed session gets 401/403, not music. Admin sessions do NOT
-// grant app access — an admin who wants the app signs in with
-// Google and approves themselves in /admin like anyone else.
+// ---- Gated app (disabled by default per user request; preserved behind APPROVAL_REQUIRED) ----
 async function requireApprovedUser(req, res, next) {
+  if (!APPROVAL_REQUIRED) {
+    req.approvedUser = (AUTH_ENABLED ? getUser(req) : null) || { email: "guest@local", name: "Guest" };
+    return next();
+  }
   if (!AUTH_ENABLED) return res.status(401).json({ error: "Sign-in and admin approval required" });
   const user = getUser(req);
   if (!user || !user.email) return res.status(401).json({ error: "Sign-in and admin approval required" });
@@ -596,6 +593,185 @@ async function requireApprovedUser(req, res, next) {
   req.approvedUser = user;
   next();
 }
+
+// ---- YouTube Video / Audio Direct Browser Download ----
+// Resolves real playable stream from YouTube Innertube player API and streams
+// it directly to the browser with Content-Disposition: attachment (or inline).
+const YT_VR_UA = "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip";
+async function resolveYouTubeStream(videoId, preferType = "video") {
+  if (!/^[a-zA-Z0-9_-]{6,20}$/.test(String(videoId || ""))) {
+    throw new Error("Invalid YouTube video ID");
+  }
+  const clients = [
+    {
+      ua: YT_VR_UA,
+      context: {
+        client: {
+          clientName: "ANDROID_VR",
+          clientVersion: "1.60.19",
+          deviceMake: "Oculus",
+          deviceModel: "Quest 3",
+          osName: "Android",
+          osVersion: "12L",
+          androidSdkVersion: 32,
+          hl: "en",
+          gl: "IN",
+        },
+      },
+    },
+    {
+      ua: "com.google.android.youtube/19.29.37 (Linux; U; Android 11) gzip",
+      context: {
+        client: {
+          clientName: "ANDROID",
+          clientVersion: "19.29.37",
+          androidSdkVersion: 30,
+          hl: "en",
+          gl: "IN",
+        },
+      },
+    },
+  ];
+
+  let lastReason = "Stream not available for this video";
+  for (const c of clients) {
+    try {
+      const r = await fetch("https://www.youtube.com/youtubei/v1/player?prettyPrint=false", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "User-Agent": c.ua },
+        body: JSON.stringify({
+          videoId,
+          context: c.context,
+          contentCheckOk: true,
+          racyCheckOk: true,
+        }),
+      });
+      if (!r.ok) continue;
+      const data = await r.json();
+      const status = data.playabilityStatus && data.playabilityStatus.status;
+      if (status !== "OK") {
+        if (data.playabilityStatus && data.playabilityStatus.reason) {
+          lastReason = data.playabilityStatus.reason;
+        }
+        continue;
+      }
+      const title = (data.videoDetails && data.videoDetails.title) || videoId;
+      const author = (data.videoDetails && data.videoDetails.author) || "";
+      const muxed = ((data.streamingData && data.streamingData.formats) || []).filter((f) => f && f.url);
+      const adaptive = ((data.streamingData && data.streamingData.adaptiveFormats) || []).filter((f) => f && f.url);
+
+      let chosen = null;
+      let ext = "mp4";
+      let contentType = "video/mp4";
+
+      if (preferType === "audio") {
+        const audioStreams = adaptive
+          .filter((f) => String(f.mimeType || "").startsWith("audio/"))
+          .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+        const mp4Audio = audioStreams.find((f) => String(f.mimeType || "").includes("mp4"));
+        chosen = mp4Audio || audioStreams[0] || muxed[0];
+        if (chosen) {
+          if (String(chosen.mimeType || "").includes("webm")) {
+            ext = "webm";
+            contentType = "audio/webm";
+          } else if (String(chosen.mimeType || "").startsWith("audio/")) {
+            ext = "m4a";
+            contentType = "audio/mp4";
+          }
+        }
+      } else {
+        // Prefer muxed video+audio MP4 (e.g., itag 18 / 22) sorted by height/bitrate
+        const sortedMuxed = muxed.sort((a, b) => (b.height || 0) - (a.height || 0));
+        chosen = sortedMuxed[0];
+        if (!chosen) {
+          const audioFallback = adaptive
+            .filter((f) => String(f.mimeType || "").startsWith("audio/"))
+            .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+          chosen = audioFallback;
+          if (chosen) {
+            ext = String(chosen.mimeType || "").includes("webm") ? "webm" : "m4a";
+            contentType = String(chosen.mimeType || "").includes("webm") ? "audio/webm" : "audio/mp4";
+          }
+        }
+      }
+
+      if (chosen && chosen.url) {
+        return {
+          url: chosen.url,
+          ua: c.ua,
+          title,
+          author,
+          ext,
+          contentType,
+          contentLength: chosen.contentLength ? parseInt(chosen.contentLength, 10) : null,
+          qualityLabel: chosen.qualityLabel || (chosen.bitrate ? `${Math.round(chosen.bitrate / 1000)}kbps` : ""),
+        };
+      }
+    } catch {}
+  }
+  const err = new Error(lastReason);
+  err.status = 404;
+  throw err;
+}
+
+app.get("/api/youtube/download/:id", async (req, res) => {
+  const videoId = (req.params.id || "").trim();
+  const type = req.query.type === "audio" ? "audio" : "video";
+  try {
+    const streamInfo = await resolveYouTubeStream(videoId, type);
+    const rawTitle = (req.query.title || streamInfo.title || videoId).trim();
+    const safeFilename = rawTitle.replace(/[\\/:*?"<>|\r\n]+/g, "").replace(/\s+/g, " ").trim().slice(0, 120) || videoId;
+    const filename = `${safeFilename}.${streamInfo.ext}`;
+
+    const headers = { "User-Agent": streamInfo.ua };
+    if (req.headers.range) {
+      headers.Range = req.headers.range;
+    }
+
+    const upstream = await fetch(streamInfo.url, { headers, redirect: "follow" });
+    if (!upstream.ok && upstream.status !== 206) {
+      return res.status(502).json({ error: `Upstream video server returned ${upstream.status}` });
+    }
+
+    res.status(upstream.status);
+    res.setHeader("Content-Type", streamInfo.contentType);
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${filename.replace(/[^\x20-\x7E]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(filename)}`
+    );
+    const cl = upstream.headers.get("content-length");
+    if (cl) res.setHeader("Content-Length", cl);
+    const cr = upstream.headers.get("content-range");
+    if (cr) res.setHeader("Content-Range", cr);
+    res.setHeader("Accept-Ranges", "bytes");
+    res.setHeader("Cache-Control", "no-store");
+
+    if (upstream.body && typeof upstream.body.getReader === "function") {
+      const reader = upstream.body.getReader();
+      req.on("close", () => {
+        try { reader.cancel(); } catch {}
+      });
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!res.writableEnded) {
+          const canContinue = res.write(Buffer.from(value));
+          if (!canContinue) {
+            await new Promise((resolve) => res.once("drain", resolve));
+          }
+        }
+      }
+      if (!res.writableEnded) res.end();
+    } else {
+      const buf = Buffer.from(await upstream.arrayBuffer());
+      res.send(buf);
+    }
+  } catch (e) {
+    if (!res.headersSent) {
+      res.status(e.status || 500).json({ error: e.message || "Could not download video" });
+    }
+  }
+});
 
 // ---- Server playlists: public sharing (2026-11-01, user request) ----
 // Before this, playlists lived only in browser localStorage, so a

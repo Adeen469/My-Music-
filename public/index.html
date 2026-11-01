@@ -769,10 +769,8 @@
     window.showPending = showPending;
 
     function switchView(view) {
-      // Gate: once the bridge has checked /api/me, an unapproved
-      // visitor cannot switch to Home or Explore, but CAN always open
-      // Library to save, play, or download offline files in their browser.
-      if (typeof window.__currentUser !== 'undefined' && !window.__currentUser && view !== 'landing' && view !== 'pending' && view !== 'library') {
+      // Gate: only enforced when window.__approvalRequired is true.
+      if (window.__approvalRequired && typeof window.__currentUser !== 'undefined' && !window.__currentUser && view !== 'landing' && view !== 'pending' && view !== 'library') {
         showLanding();
         return;
       }
@@ -955,7 +953,12 @@
                     <div class="text-xs text-zinc-400 truncate">${escapeHtml(track.artist || '')}</div>
                   </div>
                 </div>
-                <span class="text-xs text-zinc-400 tabular-nums ml-2">${formatTime(track.duration || 0)}</span>
+                <div class="flex items-center gap-2 flex-shrink-0" onclick="event.stopPropagation()">
+                  <button onclick="if (window.__saveTrackOffline) window.__saveTrackOffline('${track.id}')" class="p-1.5 rounded-full hover:bg-white/10 text-zinc-300" title="Download video">
+                    <span class="material-symbols-outlined text-lg">download</span>
+                  </button>
+                  <span class="text-xs text-zinc-400 tabular-nums">${formatTime(track.duration || 0)}</span>
+                </div>
               </div>
             `).join('')}
           </div>
@@ -1335,7 +1338,6 @@
       const pl = routeData.publicPlaylist;
       if (!pl || pl.error) return renderEmptyState('playlist_add', 'Playlist not found', (pl && pl.error) || 'This playlist may have been deleted or made private.');
       const tracks = pl.tracks || [];
-      const isApproved = typeof window.__currentUser !== 'undefined' && !!window.__currentUser;
       return `
         <div class="space-y-8">
           <div class="flex items-start gap-4">
@@ -1348,12 +1350,12 @@
                 <span class="material-symbols-outlined text-base">public</span>
                 Public playlist • ${tracks.length} song${tracks.length === 1 ? '' : 's'}${pl.owner_name ? ` • by ${escapeHtml(pl.owner_name)}` : ''}
               </p>
-              <p class="text-xs text-zinc-500 mt-1">Anyone can open this playlist. The rest of My Music needs admin approval.</p>
+              <p class="text-xs text-zinc-500 mt-1">Anyone can open this playlist.</p>
             </div>
           </div>
           <div class="flex flex-wrap items-center gap-2">
             <button onclick="playPublicPlaylistAll()" class="px-5 py-2.5 rounded-full bg-white text-black font-medium text-sm">Play all</button>
-            ${isApproved ? `<button onclick="if (window.__savePublicPlaylistCopy) window.__savePublicPlaylistCopy()" class="px-4 py-2.5 rounded-full border border-white/20 hover:bg-white/10 text-sm">Save a copy to my playlists</button>` : `<a href="/auth/google" class="px-4 py-2.5 rounded-full border border-white/20 hover:bg-white/10 text-sm">Sign in to save a copy</a>`}
+            <button onclick="if (window.__savePublicPlaylistCopy) window.__savePublicPlaylistCopy()" class="px-4 py-2.5 rounded-full border border-white/20 hover:bg-white/10 text-sm">Save a copy to my playlists</button>
           </div>
           ${!tracks.length ? `<div class="text-sm text-zinc-500 py-6">This playlist has no songs yet.</div>` : `
             <div class="divide-y divide-white/5 border-t border-b border-white/10">
@@ -1368,7 +1370,12 @@
                       <div class="text-xs text-zinc-400 truncate">${escapeHtml(track.artist || '')}</div>
                     </div>
                   </div>
-                  <span class="text-xs text-zinc-400 w-10 text-right">${formatTime(track.duration || 0)}</span>
+                  <div class="flex items-center gap-3" onclick="event.stopPropagation()">
+                    <button onclick="if (window.__saveTrackOffline) window.__saveTrackOffline('${track.id}')" class="text-zinc-300 hover:text-white" title="Download video">
+                      <span class="material-symbols-outlined text-lg">download</span>
+                    </button>
+                    <span class="text-xs text-zinc-400 w-10 text-right">${formatTime(track.duration || 0)}</span>
+                  </div>
                 </div>
               `).join('')}
             </div>
@@ -1412,8 +1419,11 @@
                       <div class="text-xs text-zinc-400 truncate">${escapeHtml(track.artist || '')}</div>
                     </div>
                   </div>
-                  <div class="flex items-center gap-3">
-                    <button onclick="event.stopPropagation(); emitEvent('onRemoveFromPlaylist', { playlistId: '${pl.id}', trackId: '${track.id}' })" class="text-zinc-400 hover:text-white" title="Remove from playlist">
+                  <div class="flex items-center gap-3" onclick="event.stopPropagation()">
+                    <button onclick="if (window.__saveTrackOffline) window.__saveTrackOffline('${track.id}')" class="text-zinc-400 hover:text-white" title="Download video">
+                      <span class="material-symbols-outlined text-lg">download</span>
+                    </button>
+                    <button onclick="emitEvent('onRemoveFromPlaylist', { playlistId: '${pl.id}', trackId: '${track.id}' })" class="text-zinc-400 hover:text-white" title="Remove from playlist">
                       <span class="material-symbols-outlined text-lg">close</span>
                     </button>
                     <span class="text-xs text-zinc-400 w-10 text-right">${formatTime(track.duration || 0)}</span>
@@ -1492,7 +1502,10 @@
               ${tracks.map((track, idx) => `
                 <div onclick="showSong('${track.id}')" class="flex items-center justify-between p-2.5 rounded-md hover:bg-white/10 cursor-pointer group">
                   <div class="flex items-center gap-3 overflow-hidden"><span class="w-5 text-center text-sm text-zinc-400">${idx + 1}</span><div class="w-11 h-11 rounded overflow-hidden bg-zinc-800 flex-shrink-0">${track.cover ? `<img src="${track.cover}" class="w-full h-full object-cover" />` : ''}</div><div class="overflow-hidden"><div class="text-sm font-medium text-white truncate">${escapeHtml(track.title)}</div><div class="text-xs text-zinc-400 truncate">${escapeHtml(track.artist || '')}</div></div></div>
-                  <button onclick="event.stopPropagation(); playTrackById('${track.id}')" class="p-2 rounded-full hover:bg-white/10"><span class="material-symbols-outlined">play_arrow</span></button>
+                  <div class="flex items-center gap-1" onclick="event.stopPropagation()">
+                    <button onclick="if (window.__saveTrackOffline) window.__saveTrackOffline('${track.id}')" class="p-2 rounded-full hover:bg-white/10 text-zinc-300" title="Download video"><span class="material-symbols-outlined">download</span></button>
+                    <button onclick="playTrackById('${track.id}')" class="p-2 rounded-full hover:bg-white/10"><span class="material-symbols-outlined">play_arrow</span></button>
+                  </div>
                 </div>
               `).join('')}
             </div>
@@ -1508,6 +1521,7 @@
       try { files = JSON.parse(localStorage.getItem('my_music_file_tracks') || '[]'); } catch {}
       const all = [...saved, ...files];
       const user = window.__currentUser || null;
+      const authOn = Boolean(window.__authEnabled);
       return `
         <div class="max-w-3xl">
           <h1 class="text-2xl sm:text-3xl font-bold mb-2">Your profile</h1>
@@ -1521,21 +1535,27 @@
             </div>
             <a href="/auth/logout" class="inline-block mt-4 px-5 py-2.5 rounded-full border border-white/20 hover:bg-white/10 text-sm">Sign out</a>
             <p class="text-sm text-zinc-400 mt-4">Signed in with Google. Your saved tracks below still live in this browser only.</p>
-          ` : `
+          ` : authOn ? `
             <p class="text-sm text-zinc-400">Not signed in. Sign-in is optional — the app works without it, and saved tracks live in this browser only.</p>
             <a href="/auth/google" class="inline-block mt-4 px-5 py-2.5 rounded-full bg-white text-black font-medium text-sm">Sign in with Google</a>
+          ` : `
+            <p class="text-sm text-zinc-400">Google sign-in and admin approval are currently disabled. All music, playlists, and browser video downloads work directly without signing in.</p>
           `}
           <div class="flex gap-6 mt-6">
             <div><div class="text-xl font-bold">${all.length}</div><div class="text-xs text-zinc-400">Saved tracks</div></div>
+            <div><div class="text-xl font-bold">${(window.__offlineFiles || []).length}</div><div class="text-xs text-zinc-400">Offline downloads</div></div>
             <div><div class="text-xl font-bold">${state.likedIds.size}</div><div class="text-xs text-zinc-400">Liked</div></div>
           </div>
           <button onclick="switchView('library')" class="mt-6 px-5 py-2.5 rounded-full bg-white text-black font-medium text-sm">Open Library</button>
-          ${!all.length ? `<div class="text-sm text-zinc-500 py-8">Nothing saved yet. Tap Like on a song to save it here.</div>` : `
+          ${!all.length ? `<div class="text-sm text-zinc-500 py-8">Nothing saved yet. Tap Like or Download on any video to save it here.</div>` : `
             <div class="space-y-1 mt-8">
               ${all.map(track => `
-                <div onclick="showSong('${track.id}')" class="flex items-center gap-3 p-2 rounded-md hover:bg-white/10 cursor-pointer">
-                  <div class="w-11 h-11 rounded overflow-hidden bg-zinc-800 flex-shrink-0">${track.thumbnail ? `<img src="${track.thumbnail}" class="w-full h-full object-cover" />` : ''}</div>
-                  <div class="overflow-hidden"><div class="text-sm font-medium text-white truncate">${escapeHtml(track.title)}</div><div class="text-xs text-zinc-400 truncate">${escapeHtml(track.channel || '')}</div></div>
+                <div onclick="showSong('${track.id}')" class="flex items-center justify-between p-2 rounded-md hover:bg-white/10 cursor-pointer">
+                  <div class="flex items-center gap-3 overflow-hidden">
+                    <div class="w-11 h-11 rounded overflow-hidden bg-zinc-800 flex-shrink-0">${track.thumbnail ? `<img src="${track.thumbnail}" class="w-full h-full object-cover" />` : ''}</div>
+                    <div class="overflow-hidden"><div class="text-sm font-medium text-white truncate">${escapeHtml(track.title)}</div><div class="text-xs text-zinc-400 truncate">${escapeHtml(track.channel || '')}</div></div>
+                  </div>
+                  <button onclick="event.stopPropagation(); if (window.__saveTrackOffline) window.__saveTrackOffline('${track.id}')" class="p-2 rounded-full hover:bg-white/10 text-zinc-300" title="Download video"><span class="material-symbols-outlined">download</span></button>
                 </div>
               `).join('')}
             </div>
@@ -1952,6 +1972,7 @@
         }
         container.innerHTML = queue.map((track, idx) => {
           const isCurrent = idx === currentIndex;
+          const isOffline = state.offlineTrackIds && state.offlineTrackIds.has(track.id);
           return `
             <div onclick="playTrackById('${track.id}')" class="flex items-center justify-between p-2 rounded-md hover:bg-white/10 cursor-pointer group transition ${isCurrent ? 'bg-white/10' : ''}">
               <div class="flex items-center gap-3 overflow-hidden">
@@ -1963,7 +1984,12 @@
                   <div class="text-xs text-zinc-400 truncate">${escapeHtml(track.artist || '')}</div>
                 </div>
               </div>
-              <span class="text-xs text-zinc-400 tabular-nums ml-2">${formatTime(track.duration || 0)}</span>
+              <div class="flex items-center gap-2 ml-2 flex-shrink-0">
+                <button onclick="event.stopPropagation(); window.__saveTrackOffline('${track.id}')" class="p-1 rounded-full hover:bg-white/10 ${isOffline ? 'text-emerald-400' : 'text-zinc-400 hover:text-white'}" title="${isOffline ? 'Downloaded (click to download again)' : 'Download video in browser'}">
+                  <span class="material-symbols-outlined text-lg ${isOffline ? 'filled' : ''}">${isOffline ? 'download_done' : 'download'}</span>
+                </button>
+                <span class="text-xs text-zinc-400 tabular-nums">${formatTime(track.duration || 0)}</span>
+              </div>
             </div>
           `;
         }).join('');
@@ -1984,7 +2010,9 @@
           container.innerHTML = `<div class="py-12 text-center text-xs text-zinc-500">No related tracks found.</div>`;
           return;
         }
-        container.innerHTML = state.tracks.slice(0, 8).map(track => `
+        container.innerHTML = state.tracks.slice(0, 8).map(track => {
+          const isOffline = state.offlineTrackIds && state.offlineTrackIds.has(track.id);
+          return `
           <div onclick="playTrackById('${track.id}')" class="flex items-center justify-between p-2 rounded hover:bg-white/10 cursor-pointer">
             <div class="flex items-center gap-3 overflow-hidden">
               <div class="w-10 h-10 rounded bg-zinc-800 overflow-hidden flex-shrink-0">
@@ -1995,9 +2023,14 @@
                 <div class="text-xs text-zinc-400 truncate">${escapeHtml(track.artist || '')}</div>
               </div>
             </div>
-            <span class="material-symbols-outlined text-zinc-400">play_arrow</span>
+            <div class="flex items-center gap-2 ml-2 flex-shrink-0">
+              <button onclick="event.stopPropagation(); window.__saveTrackOffline('${track.id}')" class="p-1 rounded-full hover:bg-white/10 ${isOffline ? 'text-emerald-400' : 'text-zinc-400 hover:text-white'}" title="${isOffline ? 'Downloaded (click to download again)' : 'Download video in browser'}">
+                <span class="material-symbols-outlined text-lg ${isOffline ? 'filled' : ''}">${isOffline ? 'download_done' : 'download'}</span>
+              </button>
+              <span class="material-symbols-outlined text-zinc-400">play_arrow</span>
+            </div>
           </div>
-        `).join('');
+        `}).join('');
       }
     }
 

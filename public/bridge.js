@@ -325,49 +325,110 @@
       if (btn) btn.disabled = false;
     }
   };
-  window.__saveTrackOffline = async (trackId) => {
+  window.__saveTrackOffline = async (trackId, preferType = "video") => {
     const key = `track-${trackId}`;
-    if (__offlineSavingLocks.has(key)) return;
+    if (__offlineSavingLocks.has(key)) {
+      API.notify("Download already in progress…");
+      return;
+    }
     __offlineSavingLocks.add(key);
     try {
       const track = (typeof poolById !== "undefined" && poolById.get(trackId))
         || (typeof currentTracks !== "undefined" && currentTracks.find((t) => String(t.id) === String(trackId)))
         || (typeof state !== "undefined" && state.tracks.find((t) => String(t.id) === String(trackId)))
-        || (typeof queue !== "undefined" && queue.find((t) => String(t.id) === String(trackId)));
-      if (!track) { API.notify("Song not found"); return; }
+        || (typeof queue !== "undefined" && queue.find((t) => String(t.id) === String(trackId)))
+        || { id: trackId, videoId: String(trackId).startsWith("file-") ? null : trackId, title: String(trackId), artist: "" };
+
       const existing = await offlineGet(trackId).catch(() => null);
       if (existing && existing.blob) {
         await window.__downloadOfflineFile(trackId);
         return;
       }
+
+      const safeTitle = (track.title || "video").replace(/[\\/:*?"<>|]/g, "").trim() || "video";
+      const videoId = track.videoId || (!String(track.id || "").startsWith("file-") ? track.id : null);
+
+      // If this is a YouTube video from the site, fetch the stream via /api/youtube/download/:id,
+      // save it in browser IndexedDB for offline playback, and trigger browser file download.
+      if (videoId && (!track.downloadUrl || !/^https?:\/\//i.test(track.downloadUrl))) {
+        const downloadEndpoint = `/api/youtube/download/${encodeURIComponent(videoId)}?type=${encodeURIComponent(preferType)}&title=${encodeURIComponent(track.title || videoId)}`;
+        API.notify(`Downloading "${track.title || videoId}" in browser…`);
+        const res = await fetch(downloadEndpoint);
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || `Download failed (${res.status})`);
+        }
+        const blob = await res.blob();
+        const contentType = res.headers.get("content-type") || blob.type || "video/mp4";
+        const ext = contentType.includes("webm") ? ".webm" : contentType.startsWith("audio/") ? ".m4a" : ".mp4";
+        const fileName = `${safeTitle}${ext}`;
+
+        // Save in browser IndexedDB so it is also available offline in Library > Offline
+        try {
+          await saveBlobOffline({
+            id: track.id || videoId,
+            title: track.title || videoId,
+            artist: track.artist || "",
+            cover: track.cover || "",
+            fileName,
+            mimeType: contentType,
+            blob,
+            source: "youtube",
+          });
+        } catch {
+          // Even if IndexedDB quota is full or exceeds 50MB, still trigger browser file download
+        }
+
+        // Trigger native browser file download
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = blobUrl;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+
+        API.notify(`Downloaded "${fileName}" & saved offline in browser`);
+        if (typeof renderContent === "function") { try { renderContent(); } catch {} }
+        return;
+      }
+
       let link = track.downloadUrl || track.audioUrl;
       if (link && link.startsWith("blob:")) {
-        API.notify("This file is already saved in this browser");
+        await window.__downloadOfflineFile(trackId);
         return;
       }
       if (!link || !/^https?:\/\//i.test(link)) {
-        // Prompt user or switch to Library > Offline so they can attach or upload a file
-        API.notify("Attach a direct file URL or pick a local file in Library → Offline to save offline.");
+        API.notify("Could not find a downloadable stream for this track.");
         return;
       }
-      API.notify("Downloading file for offline use…");
+      API.notify(`Downloading "${track.title || "file"}"…`);
       const blob = await fetchBlobWithFallback(link);
-      const ext = inferExtension(link, blob.type) || ".mp3";
-      const safeTitle = (track.title || "song").replace(/[\\/:*?"<>|]/g, "") || "song";
+      const ext = inferExtension(link, blob.type) || ".mp4";
+      const fileName = `${safeTitle}${ext}`;
       await saveBlobOffline({
         id: trackId,
         title: track.title,
         artist: track.artist || "",
         cover: track.cover || "",
-        fileName: `${safeTitle}${ext}`,
-        mimeType: blob.type || "audio/mpeg",
+        fileName,
+        mimeType: blob.type || "video/mp4",
         blob,
         source: "link",
       });
-      API.notify(`Saved "${track.title}" offline in this browser`);
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+      API.notify(`Downloaded "${fileName}" & saved offline in browser`);
       if (typeof renderContent === "function") { try { renderContent(); } catch {} }
     } catch (e) {
-      API.notify(e.message || "Could not save that file offline. Pick the file from your device in Library > Offline.");
+      API.notify(e.message || "Could not download this video");
     } finally {
       __offlineSavingLocks.delete(key);
     }
@@ -376,8 +437,8 @@
     try {
       const cur = (typeof queue !== "undefined" && typeof currentIndex !== "undefined") ? queue[currentIndex] : null;
       if (!cur) { API.notify("No track is playing"); return; }
-      await window.__saveTrackOffline(cur.id);
-    } catch { API.notify("Could not save this track offline"); }
+      await window.__saveTrackOffline(cur.id, "video");
+    } catch { API.notify("Could not download this track"); }
   };
   window.__playOfflineFile = async (id) => {
     try {
@@ -742,21 +803,15 @@
   }
 
   // ---- Separate pages: load artist / profile data on route change ----
-  // SONG PAGE REMOVED 2026-11-01 (user: never show it). A song route
-  // can no longer reach here via parseRoute, but if one somehow does,
-  // play it on Home instead of ever rendering a song page.
   async function loadRoute(route) {
-    // Public playlist routes are the one exception to the gate:
-    // anyone can open /playlist/<id>, signed in or not.
     if (route && route.type === "publicPlaylist") {
       if (typeof window.showPublicPlaylist === "function") window.showPublicPlaylist(route.id);
       return;
     }
-    // Gated app: once auth has been checked, an unapproved visitor
-    // is sent back to the landing page on any route change, including
-    // Back to '/' (route = null). Before the check runs,
-    // __currentUser is undefined, so do not gate yet.
-    if (typeof window.__currentUser !== "undefined" && !window.__currentUser && typeof window.showLanding === "function") { window.showLanding(); return; }
+    if (window.__approvalRequired && typeof window.__currentUser !== "undefined" && !window.__currentUser && typeof window.showLanding === "function") {
+      window.showLanding();
+      return;
+    }
     if (!route) return;
     try {
       if (route.type === "song") {
@@ -789,7 +844,7 @@
   // ---- MyMusicAPI event wiring ----
   let searchTimer = null;
   API.on("onSearch", (q) => {
-    if (!window.__currentUser && typeof window.showLanding === "function") { window.showLanding(); return; }
+    if (window.__approvalRequired && !window.__currentUser && typeof window.showLanding === "function") { window.showLanding(); return; }
     if (q) recordRec({ type: "search", query: q });
     clearTimeout(searchTimer);
     if (!q) { loadTrending(); return; }
@@ -798,8 +853,6 @@
         const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`); const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Search failed");
         setCatalogFor((data.items || []).map(mapItem));
-        // The UI filters its own list by the typed query; clear that filter
-        // so server results are shown as returned, not double-filtered.
         try { searchQuery = ""; renderContent(); } catch { /* render already done by setCatalog */ }
       } catch (e) { API.notify(e.message); }
     }, 350);
@@ -818,18 +871,13 @@
     }
   });
   API.on("onPlaylistSelect", (id) => {
-    // Public playlists are open to anyone, even without approval:
-    // a sidebar item with id public-<server id> opens the shared
-    // view, not the local playlist view.
     if (typeof id === "string" && id.startsWith("public-")) {
       if (typeof window.showPublicPlaylist === "function") window.showPublicPlaylist(id.slice(7));
       return;
     }
-    if (!window.__currentUser && typeof window.showLanding === "function") { window.showLanding(); return; }
+    if (window.__approvalRequired && !window.__currentUser && typeof window.showLanding === "function") { window.showLanding(); return; }
     const pl = loadPlaylists().find((p) => String(p.id) === String(id));
     if (pl) {
-      // Refresh the sidebar copy so the view has the latest tracks,
-      // then open the playlist view (index.html renderPlaylistView).
       refreshPlaylistsUI();
       try { if (typeof window.showPlaylist === "function") window.showPlaylist(pl.id); } catch {}
       return;
@@ -902,13 +950,17 @@
     API.notify("Playlist deleted");
   });
   API.on("onCastClick", () => API.notify("Cast is not available in this web app."));
-  // Sign-in state: avatar shows your initial when signed in, and tapping
-  // it goes to your profile; when signed out it starts Google sign-in.
+
+  window.__authEnabled = false;
+  window.__approvalRequired = false;
+
   async function refreshMe() {
     try {
       const res = await fetch("/api/me"); const data = await res.json();
       window.__currentUser = data.user || null;
-      if (!data.user && data.registrationStatus) {
+      window.__authEnabled = Boolean(data.authEnabled);
+      window.__approvalRequired = Boolean(data.approvalRequired);
+      if (window.__approvalRequired && !data.user && data.registrationStatus) {
         if (data.registrationStatus === "removed") API.notify("Your account was removed by the admin.");
         else if (data.registrationStatus === "rejected") API.notify("Your registration was not approved by the admin.");
         else if (data.registrationStatus === "pending") API.notify("Your registration is waiting for admin approval.");
@@ -926,17 +978,19 @@
     } catch { return null; }
   }
   API.on("onProfileClick", () => {
-    if (window.__currentUser) { try { window.showProfile(); } catch {} }
-    else { window.location.href = "/auth/google"; }
+    if (window.__currentUser || !window.__authEnabled) {
+      try { window.showProfile(); } catch {}
+    } else {
+      window.location.href = "/auth/google";
+    }
   });
   API.on("onArtistSelect", (name) => { try { window.showArtist(name); } catch {} });
-  // NOTE: the old "not saved yet" onCreatePlaylist stub was here and
-  // has been deleted — the real handler is above, otherwise it would
-  // overwrite it (API.on replaces the previous handler).
 
   // Nav clicks: load the right data after the UI switches view.
-  // Library > Offline is browser-local and always accessible so users can save/download any file offline.
-  const gated = (fn) => () => { if (!window.__currentUser && typeof window.showLanding === "function") window.showLanding(); else fn(); };
+  const gated = (fn) => () => {
+    if (window.__approvalRequired && !window.__currentUser && typeof window.showLanding === "function") window.showLanding();
+    else fn();
+  };
   document.querySelectorAll('[data-nav="home"], [data-mobile-nav="home"]').forEach((b) => b.addEventListener("click", gated(loadTrending)));
   document.querySelectorAll('[data-nav="explore"], [data-mobile-nav="explore"]').forEach((b) => b.addEventListener("click", gated(loadTrending)));
   document.querySelectorAll('[data-nav="library"], [data-mobile-nav="library"]').forEach((b) => b.addEventListener("click", loadLibrary));
@@ -947,18 +1001,9 @@
 
   (async () => {
     await loadOfflineFiles().catch(() => {});
-    // GATED APP (2026-11-01, user request): auth is checked FIRST,
-    // and no catalog, search or artist data is loaded at all until
-    // /api/me confirms an APPROVED user. Everyone else sees only:
-    //   ?registration=pending  -> the pending page
-    //   ?registration=rejected -> the landing page (with a notice)
-    //   /library               -> local browser Library & Offline files
-    //   otherwise               -> the landing page
     let reg = null;
     try { reg = new URLSearchParams(location.search).get("registration"); } catch {}
     const user = await refreshMe();
-    // Public playlist exception: anyone can open /playlist/<id>,
-    // even without approval — this is checked before the gate.
     if (typeof routePage !== "undefined" && routePage && routePage.type === "publicPlaylist") {
       await loadPublicPlaylists();
       if (typeof window.showPublicPlaylist === "function") window.showPublicPlaylist(routePage.id);
@@ -968,36 +1013,34 @@
       await loadLibrary();
       return;
     }
-    if (reg === "pending") {
-      window.__registrationRejected = false;
-      if (typeof window.showPending === "function") window.showPending();
-      API.notify("Your registration is waiting for admin approval.");
-      return;
+    if (window.__approvalRequired) {
+      if (reg === "pending") {
+        window.__registrationRejected = false;
+        if (typeof window.showPending === "function") window.showPending();
+        API.notify("Your registration is waiting for admin approval.");
+        return;
+      }
+      if (reg === "rejected" || reg === "removed") {
+        window.__registrationRejected = (reg === "rejected");
+        if (typeof window.showLanding === "function") window.showLanding();
+        await loadPublicPlaylists();
+        API.notify(reg === "rejected" ? "Your registration was not approved by the admin." : "Your account was removed by the admin.");
+        return;
+      }
+      if (!user) {
+        window.__registrationRejected = false;
+        if (typeof window.showLanding === "function") window.showLanding();
+        await loadPublicPlaylists();
+        return;
+      }
     }
-    if (reg === "rejected" || reg === "removed") {
-      window.__registrationRejected = (reg === "rejected");
-      if (typeof window.showLanding === "function") window.showLanding();
-      await loadPublicPlaylists();
-      API.notify(reg === "rejected" ? "Your registration was not approved by the admin." : "Your account was removed by the admin.");
-      return;
-    }
-    if (!user) {
-      window.__registrationRejected = false;
-      if (typeof window.showLanding === "function") window.showLanding();
-      await loadPublicPlaylists();
-      return;
-    }
-    // Approved user only from here: the real app.
+    // Open app directly when approval is disabled (or when user is approved).
     await syncPublicPlaylists();
     await loadPublicPlaylists();
     try {
       const health = await (await fetch("/api/health")).json();
       if (!health.youtubeConfigured) API.notify("YouTube API is not connected yet: set YOUTUBE_API_KEY in Vercel env vars, then redeploy. No sample songs are shown.");
     } catch { /* health is best-effort */ }
-    // Deep link (parsed by index.html before this script ran) wins over home.
-    // A /song/<id> deep link is NOT a song page any more: parseRoute
-    // already replaced the URL with '/' and stored the id, so play
-    // that song on Home, then load the home catalog underneath it.
     try {
       if (typeof window.__deepLinkSongId !== "undefined" && window.__deepLinkSongId && !String(window.__deepLinkSongId).startsWith("file-")) {
         const id = window.__deepLinkSongId;
